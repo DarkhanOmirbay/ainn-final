@@ -1,0 +1,8 @@
+228df4d upload synthetic generated data train, test, val
+9de1217 upload readme.md
+99d8ddb ml notes
+7e8ade5 final project requirements txt file
+8306a0b upload gitignore and python-version files
+14c262b inference streamlit app
+5540adf full model training ipynb file
+8d7c0d9 upload libs list
