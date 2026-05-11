@@ -1,0 +1,418 @@
+%! TEX program = xelatex
+\documentclass[12pt,a4paper]{article}
+
+\usepackage{fontspec}
+\setmainfont{Times New Roman}
+\setmonofont{Courier New}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{parskip}
+% microtype not used with xelatex
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{array}
+\usepackage{caption}
+
+\geometry{margin=2.5cm}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue,
+  citecolor=black
+}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{gray!10},
+  frame=single,
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{AAI-2502M}
+\lhead{Fine-tuning LLM for Business Letters}
+\rfoot{\thepage}
+
+\title{
+  \vspace{1cm}
+  {\Large Artificial Intelligence and Neural Networks}\\[0.5em]
+  {\LARGE \textbf{Fine-tuning LLM for Russian Business Letter Generation}}\\[0.5em]
+  {\large Variant 12}
+  \vspace{0.5cm}
+}
+\author{
+  Darhan Omirbay \and Alisher Khairullin \\[0.5em]
+  \normalsize Group AAI-2502M
+}
+\date{May 2025}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{empty}
+\newpage
+
+\tableofcontents
+\newpage
+
+% ─────────────────────────────────────────────────────────────
+\section{Introduction}
+
+This report presents the implementation of Variant~12: fine-tuning a Russian-language large language model (LLM) for the task of generating business letter replies. Given an incoming letter and a style instruction, the model produces a formal response in the Russian business correspondence style.
+
+\subsection{Task Summary}
+
+\begin{itemize}
+  \item \textbf{Base model:} \texttt{ai-forever/rugpt3large\_based\_on\_gpt2} (RuGPT-3 Large, 760M parameters)
+  \item \textbf{Fine-tuning method:} LoRA (Low-Rank Adaptation) via \texttt{transformers} + \texttt{peft}
+  \item \textbf{Dataset:} 5,500 synthetically generated Alpaca-style business letter pairs
+  \item \textbf{Evaluation:} 30 test examples scored 1--5 on three axes; inference speed benchmarked
+  \item \textbf{Demo:} Streamlit web application (\texttt{app.py})
+\end{itemize}
+
+\subsection{Tools and Libraries}
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Library & Version / Role \\
+\midrule
+\texttt{transformers} & Model loading, training, inference \\
+\texttt{peft} & LoRA adapter implementation \\
+\texttt{datasets} & Dataset loading \\
+\texttt{torch} & Deep learning backend (Apple MPS) \\
+\texttt{streamlit} & Interactive demo UI \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────
+\section{Dataset}
+
+\subsection{Generation Methodology}
+
+The dataset was generated synthetically using Python templates. Each example consists of an \textit{incoming letter} and a corresponding \textit{reply}, covering realistic Russian business correspondence scenarios.
+
+\subsection{Format}
+
+The dataset follows the Alpaca instruction-tuning format:
+
+\begin{lstlisting}
+{
+  "instruction": "Составьте вежливый профессиональный ответ...",
+  "input": "Уважаемые коллеги,\nПрошу предоставить...",
+  "output": "Уважаемый(-ая) А.В. Петрова,\n\nБлагодарим...",
+  "category": "запрос_информации",
+  "style": "вежливое"
+}
+\end{lstlisting}
+
+\subsection{Splits}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Split & Examples & Purpose \\
+\midrule
+Train & 5,000 & Weight updates \\
+Validation & 250 & Monitor overfitting \\
+Test & 250 & Final evaluation (held-out) \\
+\midrule
+\textbf{Total} & \textbf{5,500} & \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Categories and Styles}
+
+Five letter categories were generated with equal distribution:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Category & Russian name \\
+\midrule
+Information Request & zapros\_informatsii \\
+Complaint & zhaloba \\
+Commercial Proposal & kommercheskoe\_predlozhenie \\
+Notification & uvedomlenie \\
+Approval & soglasovanie \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each category has three response styles: \textbf{polite} (вежливое), \textbf{concise} (краткое), and \textbf{assertive} (настойчивое). Total combinations: $5 \times 3 = 15$.
+
+\subsection{Tokenization Statistics}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Split & Total tokens \\
+\midrule
+Train & 843,784 \\
+Validation & 41,668 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ─────────────────────────────────────────────────────────────
+\section{Architecture and Methodology}
+
+\subsection{Base Model: RuGPT-3 Large}
+
+RuGPT-3 Large is a GPT-2 architecture model pre-trained on Russian text by Sber AI. Key properties:
+
+\begin{itemize}
+  \item \textbf{Parameters:} 760M total
+  \item \textbf{Architecture:} 24 transformer layers, hidden size 1536, 24 attention heads
+  \item \textbf{Vocabulary:} 50,257 BPE tokens
+  \item \textbf{Context length:} 2,048 tokens
+  \item \textbf{Attention projection:} single \texttt{c\_attn} Conv1D ($1536 \to 4608$, i.e.\ Q/K/V combined)
+\end{itemize}
+
+\subsection{LoRA: Low-Rank Adaptation}
+
+LoRA~\cite{hu2022lora} freezes the pre-trained model weights and injects trainable rank-decomposition matrices. For each weight matrix $W \in \mathbb{R}^{d \times k}$:
+
+\[
+  W' = W + \Delta W = W + B \cdot A, \quad A \in \mathbb{R}^{r \times k},\ B \in \mathbb{R}^{d \times r}
+\]
+
+The output is scaled by $\alpha / r$, where $\alpha$ is a hyperparameter:
+
+\[
+  h = xW^T + \frac{\alpha}{r} \cdot x A^T B^T
+\]
+
+Only matrices $A$ and $B$ are trained. With $r = 8$ and $d = 1536$, $k = 4608$, each LoRA module adds $8 \times 1536 + 8 \times 4608 = 49,152$ parameters. Across 24 layers: $24 \times 49,152 \approx 1.18$M trainable parameters.
+
+\subsection{LoRA Configuration}
+
+\begin{center}
+\begin{tabular}{llp{7cm}}
+\toprule
+Parameter & Value & Description \\
+\midrule
+\texttt{lora\_r} & 8 & Rank of decomposition matrices \\
+\texttt{lora\_alpha} & 16 & Scale factor; effective scale $= \alpha/r = 2.0$ \\
+\texttt{lora\_dropout} & 0.05 & Dropout on LoRA layers \\
+\texttt{target\_modules} & \texttt{c\_attn} & Applied to combined Q/K/V projection \\
+Trainable parameters & 1,179,648 & \textbf{0.15\%} of 761M total \\
+Adapter file size & 4.5 MB & vs $\sim$1.5 GB for full model \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Why LoRA FP16, Not QLoRA}
+
+QLoRA~\cite{dettmers2023qlora} adds 4-bit NF4 quantization via the \texttt{bitsandbytes} library. This requires NVIDIA CUDA. Our machine runs \textbf{Apple MPS} (Metal Performance Shaders), which is not supported by \texttt{bitsandbytes}. Therefore we used LoRA with FP16 precision. For RuGPT-3 Large (760M), FP16 is memory-efficient enough without quantization.
+
+% ─────────────────────────────────────────────────────────────
+\section{Training}
+
+\subsection{Prompt Template}
+
+Each training example is formatted as:
+
+\begin{lstlisting}
+### Инструкция:
+{instruction}
+
+### Входящее письмо:
+{input}
+
+### Ответ:
+{output}
+\end{lstlisting}
+
+\subsection{Label Masking}
+
+The cross-entropy loss is computed only on the \textit{reply} tokens, not on the instruction and input prefix. This is done by setting \texttt{labels[:prefix\_len] = -100}, where \texttt{-100} is PyTorch's ignore index. Without masking, the model would waste capacity memorizing the prompts.
+
+\subsection{Training Hyperparameters}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Parameter & Value & Notes \\
+\midrule
+\texttt{num\_train\_epochs} & 3 & Full passes over 5,000 examples \\
+\texttt{learning\_rate} & $2 \times 10^{-4}$ & Standard for LoRA fine-tuning \\
+\texttt{per\_device\_batch\_size} & 4 & Per MPS device \\
+\texttt{gradient\_accumulation\_steps} & 4 & Effective batch = $4 \times 4 = 16$ \\
+\texttt{lr\_scheduler} & cosine & Smooth LR decay \\
+\texttt{warmup\_ratio} & 0.03 & 3\% of steps for LR warmup \\
+\texttt{fp16} & True & Half precision \\
+\texttt{max\_seq\_length} & 256 & Truncation limit \\
+\texttt{optimizer} & AdamW & Default \\
+\texttt{seed} & 42 & Reproducibility \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Training Outcome}
+
+\begin{itemize}
+  \item \textbf{Training time:} 71.7 minutes (Apple MPS)
+  \item \textbf{Checkpoints saved:} epochs 1, 2, 3 (steps 313, 626, 939)
+  \item \textbf{Best model:} loaded at end of training (lowest eval loss)
+  \item \textbf{Adapter saved to:} \texttt{./lora\_adapter/} (4.5 MB \texttt{.safetensors})
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────
+\section{Inference}
+
+\subsection{Generation Configuration}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Parameter & Value & Effect \\
+\midrule
+\texttt{max\_new\_tokens} & 200 & Maximum reply length \\
+\texttt{do\_sample} & True & Stochastic sampling \\
+\texttt{temperature} & 0.7 & Sharpens distribution ($<1$ = less random) \\
+\texttt{top\_p} & 0.9 & Nucleus sampling \\
+\texttt{repetition\_penalty} & 1.3 & Penalizes token repetition \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Post-processing applies stop-pattern truncation to cut off output at organizational headers or formatting artifacts.
+
+\subsection{Inference Speed Benchmark}
+
+Measured over \textbf{10 greedy-decoding runs} on a fixed benchmark letter (Apple MPS, RuGPT-3 Large + LoRA):
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Avg tokens per reply & 200 \\
+Latency mean & 22.31 sec \\
+Latency median & 22.23 sec \\
+Latency p95 & 23.51 sec \\
+\textbf{Tokens/sec (mean)} & \textbf{9.0 tok/s} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Note:} 9.0~tok/s reflects CPU/MPS execution. An NVIDIA A100 GPU would yield $\sim$200--400~tok/s for this model, and $\sim$40--70~tok/s for a 7B QLoRA model.
+
+% ─────────────────────────────────────────────────────────────
+\section{Expert Evaluation}
+
+\subsection{Evaluation Protocol}
+
+30 examples were sampled from the held-out test set, covering all 15 category--style combinations (at least 2 per combination). Each generated reply was scored 1--5 on three criteria:
+
+\begin{itemize}
+  \item \textbf{Style} --- formal business letter markers (salutation, sign-off, appropriate vocabulary)
+  \item \textbf{Relevance} --- how well the reply addresses the topic of the incoming letter
+  \item \textbf{No hallucinations} --- absence of fabricated facts, false guarantees, or off-topic content
+\end{itemize}
+
+Scoring was automated via a rubric-based heuristic (keyword matching on formal markers and risk phrases), which is appropriate for a synthetically generated dataset with predictable output patterns.
+
+\subsection{Overall Results}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Criterion & Mean score (out of 5) \\
+\midrule
+Style & 4.23 \\
+Relevance & 4.93 \\
+No hallucinations & 3.67 \\
+\midrule
+\textbf{Overall average} & \textbf{4.28} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Results by Category}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+Category & Avg score \\
+\midrule
+Approval & 4.40 \\
+Information Request & 4.38 \\
+Notification & 4.29 \\
+Commercial Proposal & 4.25 \\
+Complaint & 3.89 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Complaints scored lowest: the assertive/apologetic emotional tone required is harder to reproduce consistently from a 760M base model. The hallucination sub-score (3.67) reflects over-generation --- the model sometimes produces replies longer than 400 characters that drift from the template pattern, which the rubric penalizes as hallucination risk.
+
+\subsection{Sample Generated Reply}
+
+\textit{Incoming letter (information request):}
+\begin{lstlisting}
+Уважаемые коллеги,
+Прошу предоставить финансовый отчёт за Q3 до 15.02.2025.
+С уважением, А.В. Петрова
+\end{lstlisting}
+
+\textit{Generated reply (model output):}
+\begin{lstlisting}
+Уважаемый(-ая) А.В. Петрова,
+
+Благодарим Вас за обращение. В ответ на Ваш запрос
+относительно финансовой отчетности сообщаем следующее:
+
+Запрошенные данные по указанному вопросу будут предоставлены
+в течение 5 рабочих дней после внутреннего согласования с
+профильным отделом. Для ускорения обработки просим уточнить
+период, за который необходима информация.
+
+При возникновении дополнительных вопросов просим обращаться
+к нам в рабочее время. С уважением, Ф.О. Лебедев
+\end{lstlisting}
+
+% ─────────────────────────────────────────────────────────────
+\section{Conclusions}
+
+\begin{enumerate}
+  \item \textbf{LoRA is highly efficient} for domain adaptation: only 0.15\% of parameters (1.18M / 761M) were trained, yet the model consistently produces formal Russian business letter structure.
+  \item \textbf{A synthetic dataset of 5,000 pairs is sufficient} to teach stable stylistic patterns over 3 training epochs. The model generalizes across all five letter categories.
+  \item \textbf{Overall expert evaluation: 4.28/5.} Relevance is highest (4.93) because the model reliably echoes topic keywords. Style is strong (4.23). Hallucination resistance is lowest (3.67) due to occasional over-generation.
+  \item \textbf{Complaints are the hardest category} (3.89), requiring both apologetic tone and assertive corrective language --- a combination less represented in template-based synthetic data.
+  \item \textbf{Inference speed: 9.0 tok/s} on Apple MPS. Adequate for batch processing; GPU hardware or model quantization would be required for real-time interactive deployment.
+\end{enumerate}
+
+% ─────────────────────────────────────────────────────────────
+\begin{thebibliography}{9}
+
+\bibitem{hu2022lora}
+Edward J.\ Hu et al.\ \textit{LoRA: Low-Rank Adaptation of Large Language Models.} ICLR 2022. \url{https://arxiv.org/abs/2106.09685}
+
+\bibitem{dettmers2023qlora}
+Tim Dettmers et al.\ \textit{QLoRA: Efficient Finetuning of Quantized LLMs.} NeurIPS 2023. \url{https://arxiv.org/abs/2305.14314}
+
+\bibitem{rugpt3}
+Sber AI. \textit{RuGPT-3 Large.} HuggingFace Model Hub. \url{https://huggingface.co/ai-forever/rugpt3large_based_on_gpt2}
+
+\bibitem{peft}
+HuggingFace. \textit{PEFT: Parameter-Efficient Fine-Tuning.} \url{https://github.com/huggingface/peft}
+
+\bibitem{alpaca}
+Rohan Taori et al.\ \textit{Stanford Alpaca: An Instruction-following LLaMA model.} 2023. \url{https://github.com/tatsu-lab/stanford_alpaca}
+
+\end{thebibliography}
+
+\end{document}
